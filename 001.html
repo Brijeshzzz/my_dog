@@ -188,7 +188,7 @@ This article documents my starting journey of the research in RF and iot.
 
 <td>Target Device</td>
 
-<td>Lefun Smartwatch (JieLi Chipset)</td>
+<td>XXX Smartwatch</td>
 
 </tr>
 
@@ -240,7 +240,7 @@ This article documents my starting journey of the research in RF and iot.
 
 <p>
 
-To understand the communication protocol used by the Lefun Smartwatch, I followed two complementary approaches. First, I performed static analysis of the Android application to understand how packets were generated internally. This was followed by dynamic analysis, where Bluetooth Low Energy communication was observed and validated through live experimentation.
+To understand the communication protocol used by the XXX Smartwatch, I followed two complementary approaches. First, I performed static analysis of the Android application to understand how packets were generated internally. This was followed by dynamic analysis, where Bluetooth Low Energy communication was observed and validated through live experimentation.
 
 </p>
 
@@ -248,7 +248,7 @@ To understand the communication protocol used by the Lefun Smartwatch, I followe
 
 <p>
 
-The Lefun Health Android application (APK) was decompiled using <b>JADX-GUI</b>. The objective of this phase was to identify the classes responsible for Bluetooth communication, packet construction, and checksum generation.
+The AAA Health Android application (APK) was decompiled using <b>JADX-GUI</b>. The objective of this phase was to identify the classes responsible for Bluetooth communication, packet construction, and checksum generation.
 
 </p>
 
@@ -292,7 +292,7 @@ After completing the APK analysis, Bluetooth Low Energy enumeration was performe
 
 <td>MAC Address</td>
 
-<td>66:31:39:40:1A:8A</td>
+<td>AA:BB:CC:DD:EE:FF</td>
 
 </tr>
 
@@ -300,7 +300,7 @@ After completing the APK analysis, Bluetooth Low Energy enumeration was performe
 
 <td>Service UUID</td>
 
-<td>00002d01-0000-1000-8000-00805f9b34fb</td>
+<td>11111111-2222-3333-4444-555555555555</td>
 
 </tr>
 
@@ -326,7 +326,7 @@ After completing the APK analysis, Bluetooth Low Energy enumeration was performe
 
 <p>
 
-Following the completion of both static APK analysis and dynamic BLE experimentation, the complete communication workflow between the companion Android application and the Lefun Smartwatch was successfully reconstructed.
+Following the completion of both static APK analysis and dynamic BLE experimentation, the complete communication workflow between the companion Android application and the XXX Smartwatch was successfully reconstructed.
 
 </p>
 
@@ -344,7 +344,7 @@ The complete communication pipeline is shown below.
 
 <pre>
 
-Lefun Health Application
+AAA Health Application
         |
         v
 BleWatchServiceImpl
@@ -365,7 +365,7 @@ BleConnector.writeCharacteristic()
 Handle 0x0E
         |
         v
-Lefun Smartwatch
+XXX Smartwatch
 
 </pre>
 
@@ -381,7 +381,7 @@ This communication pipeline demonstrates the complete flow of a proprietary BLE 
 
 <p>
 
-Every packet transmitted between the companion application and the Lefun Smartwatch follows a fixed frame format. By analyzing the Android application together with captured BLE traffic, the proprietary packet structure was reconstructed.
+Every packet transmitted between the companion application and the XXX Smartwatch follows a fixed frame format. By analyzing the Android application together with captured BLE traffic, the proprietary packet structure was reconstructed.
 
 </p>
 
@@ -835,7 +835,7 @@ Static analysis of the Android application together with dynamic BLE experiments
 
 <p>
 
-These recovered opcodes form the basis of the proprietary communication protocol implemented by the Lefun Smartwatch. Understanding their behavior made it possible to reproduce BLE packets and interact directly with the device using custom Python tools instead of the official Android application.
+These recovered opcodes form the basis of the proprietary communication protocol implemented by the XXX Smartwatch. Understanding their behavior made it possible to reproduce BLE packets and interact directly with the device using custom Python tools instead of the official Android application.
 
 </p>
 
@@ -845,7 +845,7 @@ These recovered opcodes form the basis of the proprietary communication protocol
 
 <p>
 
-Following protocol reconstruction and experimental validation, a security assessment was performed to evaluate the communication mechanism used by the Lefun Smartwatch. The analysis focused on authentication, integrity protection, and the overall security model implemented by the proprietary BLE protocol.
+Following protocol reconstruction and experimental validation, a security assessment was performed to evaluate the communication mechanism used by the XXX Smartwatch. The analysis focused on authentication, integrity protection, and the overall security model implemented by the proprietary BLE protocol.
 
 </p>
 
@@ -924,7 +924,7 @@ BleConnector.writeCharacteristic()
 Handle 0x0E
         |
         v
-Lefun Smartwatch
+XXX Smartwatch
 
 </pre>
 
@@ -940,7 +940,7 @@ This reconstructed workflow confirms the complete end-to-end transmission path u
 
 <p>
 
-The Lefun Smartwatch validates every transmitted packet using the <b>CRC-8/MAXIM</b> integrity algorithm. During static analysis of the Android application, the checksum implementation was recovered from the <b>WristbandCRCUtil</b> class.
+The XXX Smartwatch validates every transmitted packet using the <b>CRC-8/MAXIM</b> integrity algorithm. During static analysis of the Android application, the checksum implementation was recovered from the <b>WristbandCRCUtil</b> class.
 
 </p>
 
@@ -1035,7 +1035,7 @@ After reconstructing the proprietary communication protocol, several commands we
 
 <p>
 
-The successful execution of these experiments demonstrates that the reconstructed protocol accurately represents the communication mechanism used by the Lefun Smartwatch. The recovered packet format, checksum algorithm, and command opcodes were sufficient to reproduce valid BLE commands without relying on the official companion application.
+The successful execution of these experiments demonstrates that the reconstructed protocol accurately represents the communication mechanism used by the XXX Smartwatch. The recovered packet format, checksum algorithm, and command opcodes were sufficient to reproduce valid BLE commands without relying on the official companion application.
 
 </p>
 
@@ -1045,7 +1045,7 @@ The successful execution of these experiments demonstrates that the reconstructe
 
 <p>
 
-To validate the reconstructed communication protocol, several Proof of Concept (PoC) experiments were performed using custom Python tooling. These experiments confirmed that the recovered packet format, opcode library, and CRC-8/MAXIM implementation were sufficient to communicate directly with the Lefun Smartwatch without relying on the official Android application.
+To validate the reconstructed communication protocol, several Proof of Concept (PoC) experiments were performed using custom Python tooling. These experiments confirmed that the recovered packet format, opcode library, and CRC-8/MAXIM implementation were sufficient to communicate directly with the XXX Smartwatch without relying on the official Android application.
 
 </p>
 
@@ -1085,7 +1085,7 @@ The following figures illustrate the Proof of Concept experiments carried out du
 
 <br><br>
 
-<i>Figure 3: Proof of Concept - BLE Communication Experiment</i>
+<i>gotcha</i>
 
 </center>
 
@@ -1389,10 +1389,10 @@ packet = bytes.fromhex(
     "AB0B04011A070D141100EB"
 )
 
-MAC = "66:31:39:40:1A:8A"
+MAC = "AA:BB:CC:DD:EE:FF"
 
 CHAR_UUID = (
-    "00002d01-0000-1000-8000-00805f9b34fb"
+    "11111111-2222-3333-4444-555555555555"
 )
 
 async def send_packet():
@@ -1434,6 +1434,16 @@ After transmitting the packet, the smartwatch immediately updated its internal r
 The following sections describe each stage of small potato stuffsss....!
 
 </p>
+
+<center>
+
+<img src="images/poc9.png" width="750">
+
+<br><br>
+
+<i>DANKUUUU</i>
+
+</center>
 
 <p>
 
