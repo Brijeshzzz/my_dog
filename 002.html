@@ -1,0 +1,811 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+
+<html>
+
+<head>
+
+<title>[002] SYSCALL SMUGGLER</title>
+
+<style>
+
+body{
+
+    background:#1A1A1A;
+
+    color:#F8F6F2;
+
+    font-family:Verdana, Arial, Helvetica, sans-serif;
+
+    font-size:18px;
+
+    line-height:1.8;
+
+    width:900px;
+
+    margin:40px auto;
+
+}
+
+h1,h2,h3,h4{
+
+    color:#FFFFFF;
+
+}
+
+p{
+
+    color:#F8F6F2;
+
+}
+
+a{
+
+    color:#8AB4F8;
+
+    text-decoration:none;
+
+}
+
+a:hover{
+
+    text-decoration:underline;
+
+}
+
+hr{
+
+    border:0;
+
+    border-top:1px solid #444444;
+
+}
+
+table{
+
+    width:100%;
+
+    border-collapse:collapse;
+
+    margin:20px 0;
+
+}
+
+th{
+
+    background:#2A2A2A;
+
+    color:#FFFFFF;
+
+}
+
+th,td{
+
+    border:1px solid #444444;
+
+    padding:10px;
+
+}
+
+pre{
+
+    background:#2A2A2A;
+
+    color:#F8F6F2;
+
+    border:1px solid #444444;
+
+    padding:15px;
+
+    overflow:auto;
+
+}
+
+ul{
+
+    line-height:2;
+
+}
+
+img{
+
+    max-width:100%;
+
+}
+
+blockquote{
+
+    border-left:4px solid #666666;
+
+    padding-left:15px;
+
+    color:#D8D4CC;
+
+    font-style:italic;
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<center>
+
+<h1>[002] PWN - Syscall Smuggler</h1>
+
+<p>
+
+<b>Brijesh Babu K</b>
+
+<br>
+
+Independent Security Research
+
+<br><br>
+
+Published: August 2026
+
+</p>
+
+</center>
+
+<hr>
+
+<h2>Introduction</h2>
+
+<p>
+
+While working on the <b>syscall-smuggler</b> CTF challenge, the main
+restriction was that the shellcode could not contain <b>syscall</b>,
+<b>sysenter</b>, or <b>int</b> instructions.
+
+</p>
+
+<p>
+
+The challenge reads the supplied bytes, applies a filter, and then
+executes them as code. The filter searches for specific byte sequences
+corresponding to system-call instructions.
+
+</p>
+
+<p>
+
+Honestly, I don't know why, but I got kind of obsessed with this
+challenge. I kept experimenting with the shellcode and the instruction
+bytes until I finally figured out how to make it work.
+
+</p>
+
+<p>
+
+So yeah, I just felt like sharing this with you guys. It's a small
+thing, but I really enjoyed figuring out how the bytes could be changed
+at runtime and still execute as a syscall.
+
+</p>
+
+<hr>
+
+<blockquote>
+
+The main objective was to execute system calls without having the
+corresponding instructions present when the shellcode was scanned.
+
+</blockquote>
+
+<hr>
+
+<h2>1. Challenge Restriction</h2>
+
+<p>
+
+The filter checks for the following byte sequences:
+
+</p>
+
+<pre>
+0F 05  → syscall
+0F 34  → sysenter
+CD 80  → int
+</pre>
+
+<p>
+
+Therefore, directly placing the following instruction in the shellcode
+would cause the filter to reject it:
+
+</p>
+
+<pre>
+0F 05
+</pre>
+
+<p>
+
+The challenge therefore required a different approach.
+
+</p>
+
+<hr>
+
+<h2>2. The Basic Idea</h2>
+
+<p>
+
+Instead of storing the <b>syscall</b> instruction directly, I used a
+two-byte placeholder.
+
+</p>
+
+<pre>
+dw 0x9090
+</pre>
+
+<p>
+
+The resulting bytes are:
+
+</p>
+
+<pre>
+90 90
+</pre>
+
+<p>
+
+These bytes represent two <b>NOP</b> instructions and do not match the
+forbidden <b>0F 05</b> sequence.
+
+</p>
+
+<p>
+
+The important part is that the placeholder is modified later during
+execution.
+
+</p>
+
+<hr>
+
+<h2>3. Self-Modifying Code</h2>
+
+<p>
+
+A small section of the shellcode modifies the placeholder before it is
+executed.
+
+</p>
+
+<pre>
+add word [first_syscall], 0x747F
+</pre>
+
+<p>
+
+Initially the memory contains:
+
+</p>
+
+<pre>
+90 90
+</pre>
+
+<p>
+
+The 16-bit calculation is:
+
+</p>
+
+<pre>
+0x9090 + 0x747F = 0x1050F
+</pre>
+
+<p>
+
+Because the destination is a 16-bit word, only the lower 16 bits are
+stored:
+
+</p>
+
+<pre>
+0x050F
+</pre>
+
+<p>
+
+x86 uses little-endian byte ordering, so the bytes in memory become:
+
+</p>
+
+<pre>
+0F 05
+</pre>
+
+<p>
+
+The resulting instruction is:
+
+</p>
+
+<pre>
+0F 05 = syscall
+</pre>
+
+<p>
+
+Therefore, the transformation is:
+
+</p>
+
+<pre>
+90 90
+  |
+  v
+0F 05
+</pre>
+
+<hr>
+
+<h2>4. Why the Filter Does Not Detect It</h2>
+
+<p>
+
+The important point is that the filter scans the shellcode <b>before</b>
+the self-modifying code executes.
+
+</p>
+
+<p>
+
+During filtering, the bytes are:
+
+</p>
+
+<pre>
+90 90
+</pre>
+
+<p>
+
+The forbidden sequence:
+
+</p>
+
+<pre>
+0F 05
+</pre>
+
+does not exist yet.
+
+</p>
+
+<p>
+
+After the filter finishes, the shellcode executes the modification code
+and changes the bytes in memory.
+
+</p>
+
+<pre>
+Filter Stage
+
+90 90
+  |
+  v
+Filter Passes
+  |
+  v
+Runtime Modification
+  |
+  v
+0F 05
+  |
+  v
+syscall
+</pre>
+
+<hr>
+
+<h2>5. Multiple Syscall Locations</h2>
+
+<p>
+
+The shellcode requires multiple system calls, so multiple placeholders
+were created.
+
+</p>
+
+<pre>
+first_syscall:
+    dw 0x9090
+
+second_syscall:
+    dw 0x9090
+</pre>
+
+<p>
+
+The same modification technique is then applied to each location.
+
+</p>
+
+<pre>
+add word [address], 0x747F
+</pre>
+
+<p>
+
+Each placeholder is transformed into:
+
+</p>
+
+<pre>
+0F 05
+</pre>
+
+<p>
+
+This allows multiple system calls to be executed without placing the
+forbidden instruction bytes directly into the initial shellcode.
+
+</p>
+
+<hr>
+
+<h2>6. Preparing the System Calls</h2>
+
+<p>
+
+After creating the runtime syscall instructions, the shellcode prepares
+the required Linux system-call arguments using the x86-64 Linux syscall
+ABI.
+
+</p>
+
+<h3>6.1 Open</h3>
+
+<p>
+
+The syscall number for <b>open</b> is prepared using:
+
+</p>
+
+<pre>
+xor eax, eax
+mov al, 2
+</pre>
+
+<p>
+
+This results in:
+
+</p>
+
+<pre>
+RAX = 2
+</pre>
+
+<p>
+
+The filename address is passed through <b>RDI</b> before the generated
+syscall instruction is executed.
+
+</p>
+
+<hr>
+
+<h3>6.2 Read</h3>
+
+<p>
+
+The file descriptor returned from the previous operation is moved into
+<b>RDI</b>.
+
+The buffer address is placed in <b>RSI</b>, while the number of bytes to
+read is placed in <b>RDX</b>.
+
+</p>
+
+<p>
+
+The read syscall number is:
+
+</p>
+
+<pre>
+RAX = 0
+</pre>
+
+<p>
+
+The runtime-generated <b>syscall</b> instruction then performs the read
+operation.
+
+</p>
+
+<hr>
+
+<h3>6.3 Write</h3>
+
+<p>
+
+The write syscall uses:
+
+</p>
+
+<pre>
+RAX = 1
+RDI = 1
+</pre>
+
+<p>
+
+Here, <b>RAX = 1</b> represents the write syscall and
+<b>RDI = 1</b> represents standard output.
+
+</p>
+
+<p>
+
+The number of bytes returned by the previous read operation is used as
+the write length.
+
+</p>
+
+<hr>
+
+<h3>6.4 Exit</h3>
+
+<p>
+
+Finally, the shellcode prepares the exit syscall:
+
+</p>
+
+<pre>
+mov al, 60
+</pre>
+
+<p>
+
+This gives:
+
+</p>
+
+<pre>
+RAX = 60
+</pre>
+
+<p>
+
+The final generated syscall terminates the process.
+
+</p>
+
+<hr>
+
+<h2>7. Overall Execution Flow</h2>
+
+<p>
+
+The complete concept can be represented as follows:
+
+</p>
+
+<pre>
+Shellcode
+    |
+    v
+90 90 placeholders
+    |
+    v
+Challenge Filter
+    |
+    v
+Filter Passes
+    |
+    v
+Self-Modifying Code
+    |
+    v
+90 90 → 0F 05
+    |
+    v
+Runtime syscall
+    |
+    v
+Open
+    |
+    v
+Read
+    |
+    v
+Write
+    |
+    v
+Exit
+</pre>
+
+<hr>
+
+<h2>8. The Important Trick</h2>
+
+<p>
+
+The key observation was that the filter checks the <b>initial bytes</b>
+of the shellcode rather than continuously monitoring the memory during
+execution.
+
+</p>
+
+<p>
+
+Because of this, the shellcode can initially contain:
+
+</p>
+
+<pre>
+90 90
+</pre>
+
+<p>
+
+and later transform those bytes into:
+
+</p>
+
+<pre>
+0F 05
+</pre>
+
+<p>
+
+The executed instruction is therefore different from the instruction
+bytes that were originally inspected by the filter.
+
+</p>
+
+<blockquote>
+
+The shellcode does not contain the syscall instruction initially; it
+constructs the instruction at runtime.
+
+</blockquote>
+
+<hr>
+
+<h2>9. Conclusion</h2>
+
+<p>
+
+This challenge was a practical example of <b>self-modifying shellcode</b>.
+The main technique was to use harmless placeholder bytes and transform
+them into the required instruction only after the filtering stage.
+
+</p>
+
+<p>
+
+The important transformation was:
+
+</p>
+
+<pre>
+90 90
+  |
+  v
+0F 05
+</pre>
+
+<p>
+
+This allowed the shellcode to pass a byte-based filter while still
+executing the required system calls at runtime.
+
+</p>
+
+<p>
+
+The main lesson from this challenge was understanding the difference
+between the <b>static bytes inspected by a filter</b> and the
+<b>instructions that exist when the processor actually executes the
+code</b>.
+
+</p>
+
+<hr>
+
+<h2>10. Polymorphic Aspect</h2>
+
+<p>
+
+This approach is closely related to the concept of <b>polymorphic
+shellcode</b>. Polymorphic shellcode changes the byte-level
+representation of code while preserving its intended behaviour.
+
+</p>
+
+<p>
+
+In this challenge, the shellcode does not contain the final
+<b>syscall</b> instruction in its initial representation. Instead, a
+different byte sequence is placed at the syscall locations and modified
+during execution.
+
+</p>
+
+<pre>
+Initial Representation
+
+90 90
+</pre>
+
+<p>
+
+After the runtime transformation, the same location becomes:
+
+</p>
+
+<pre>
+0F 05
+</pre>
+
+<p>
+
+Therefore, the bytes inspected by the filter are different from the
+instruction bytes that are eventually executed by the processor.
+
+</p>
+
+<blockquote>
+
+The important idea is to change the representation of the instruction
+at runtime while preserving the intended behaviour of the shellcode.
+
+</blockquote>
+
+<p>
+
+More precisely, this implementation is an example of
+<b>self-modifying shellcode</b> and <b>runtime instruction generation</b>.
+It has a polymorphic characteristic because the static byte
+representation and the runtime representation are different, but it is
+not a complete traditional polymorphic encoder/decoder by itself.
+
+</p>
+
+<hr>
+
+<p>
+
+The following sections describe each stage of small potato stuffsss....!
+
+</p>
+
+<center>
+
+<img src="images/poc9.png" width="750">
+
+<br><br>
+
+<i>DANKUUUU</i>
+
+</center>
+
+<center>
+
+<i>End of write-up</i>
+
+</center>
+
+<p>
+
+<a href="index.html">← Back to Home</a>
+
+</p>
+
+</body>
+
+</html>
