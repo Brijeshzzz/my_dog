@@ -1767,10 +1767,7 @@ int main()
 {
     int fd[2];
     int dd[2];
-
-    char buffer[100];
-    char calculated_data[] = "brijeshzzzz";
-
+    
     if(pipe(fd) == -1)
     {
         perror("pipe error");
