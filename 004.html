@@ -154,14 +154,20 @@ This write-up documents my solution to the
 </p>
 
 <p>
-This write-up documents my solution to the remember-this challenge from pwn.college.
-
 The main problem was that the challenge program prints a runtime leaked address and then waits for input. The payload I needed to send had to contain this leaked address in binary form, so manually copying and converting the address was not the approach I wanted.
 </p>
 
 <p>
 To solve this, I wrote a C parent program that automatically controls the challenge program. The parent creates two Linux pipes and uses fork() and execvp() to start the challenge as a child process. One pipe captures the challenge's stdout, while the second pipe sends the final payload back to the challenge's stdin.
 </p>
+
+<center>
+
+<img src="images/poc004:1.png" width="350">
+
+<br><br>
+
+</center>
 
 <p>
 The parent first reads the challenge output, extracts the leaked address using strtoul(), and converts the hexadecimal string into an integer. It then constructs an 84-byte payload containing 80 A bytes followed by the 4-byte leaked address. Finally, it sends those raw bytes through the second pipe to the challenge.
@@ -373,6 +379,14 @@ challenge stdin
 Since communication is required in both directions, I use two pipes.
 </p>
 
+<center>
+
+<img src="images/poc004:2.png" width="350">
+
+<br><br>
+
+</center>
+
 <hr>
 
 <h2>3. Creating the Pipes</h2>
@@ -557,6 +571,14 @@ and standard input.
 The reason is that I do not want the challenge's stdout to directly
 go to my terminal. I want the parent process to receive it.
 </p>
+
+<center>
+
+<img src="images/poc004:3.png" width="350">
+
+<br><br>
+
+</center>
 
 <hr>
 
@@ -1418,6 +1440,14 @@ is the ASCII representation of:
 Printing the buffer as hexadecimal makes it easier to verify the exact
 number and position of bytes.
 </p>
+
+<center>
+
+<img src="images/poc004:4.png" width="450">
+
+<br><br>
+
+</center>
 
 <hr>
 
@@ -2543,6 +2573,16 @@ back into the program.
 </blockquote>
 
 <hr>
+
+<center>
+
+<img src="images/poc9.png" width="750">
+
+<br><br>
+
+<i>DANKUUUU</i>
+
+</center>
 
 <center>
 
